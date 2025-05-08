@@ -1,0 +1,941 @@
+---
+title: "Geospatial and network analysis"
+author: "Johan"
+format: pdf
+editor: visual
+---
+
+### 4.1. Geospatial analysis
+
+#### 1. Load Required Libraries
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+
+
+library(ggplot2)       # for plotting
+library(dplyr)       # any data manipulation
+library(tidyverse)       # any data manipulation
+library(sf)          # For handling spatial data
+library(leaflet)     # For interactive maps
+library(spData)      # Spatial datasets
+library(readr)       # any data manipulation
+library(igraph)      # For network analysis
+library(caret)       # Data partitioning and model evaluation
+library(httr)
+library(utils)
+library(tidyr)       # any data manipulation
+library(webshot2)    # visualise leaflet images
+library(ggnetwork)
+library(sna)
+library(network)
+
+```
+
+#### 2. Load Data, Convert Substance Use Variables to Binary: (might need to remove'CSTAD_v2 \<- read.csv("cleaned_dataset.csv")')
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+
+# Load Dataset: remember to remove it
+CSTAD_v2 <- read.csv("cleaned_dataset.csv")
+
+# converting the different variables into binary 1s and 0s. 
+CSTAD_v2 <- CSTAD_v2 %>%
+  mutate(
+    cannabis_use1 = case_when(
+      CAN_010 == 'Yes' ~ 1,
+      CAN_010 == 'No' ~ 0
+    ),
+    alcohol_use1 = case_when(
+      ALC_010 == 'Yes' ~ 1,
+      ALC_010 == 'No' ~ 0
+    ),
+    smoking_use1 = case_when(
+      SS_010 == 'Yes' ~ 1,
+      SS_010 == 'No' ~ 0
+    )
+  )
+
+# this is to avoid any problems, by converting to plain text instead of factor levels
+CSTAD_v2$province <- as.character(CSTAD_v2$PROVID)
+
+
+# this is for aggregating Substance Use by province, and making calculations that will be using when doing leaflet maps
+province_substance_use1 <- CSTAD_v2 %>%
+  group_by(province) %>%
+  summarise(
+    avg_cannabis_use1 = mean(cannabis_use1, na.rm = TRUE),
+    avg_alcohol_use1 = mean(alcohol_use1, na.rm = TRUE),
+    avg_smoking_use1 = mean(smoking_use1, na.rm = TRUE)
+  )
+
+
+```
+
+#### 3. Load Canada Shapefile and Merge Data
+
+In order to be able to use the Shapefile, you first need to download it. In a different document, the Canada shapefile was downloaded in the following way.
+
+-   1.Define the URL of the Canada shapefile (Natural Earth):
+
+    -   reference for learning how to do this: <https://r-graph-gallery.com/168-load-a-shape-file-into-r.html>
+
+shapefile_url \<- "[https://naciscdn.org/naturalearth/50m/cultural/ne_50m_admin_1_states_provinces.zip"](https://naciscdn.org/naturalearth/50m/cultural/ne_50m_admin_1_states_provinces.zip%22)
+
+-   2.Define file path
+
+    -   reference for learning how to do this: <https://r-graph-gallery.com/168-load-a-shape-file-into-r.html>
+
+zip_file \<- "canada_shapefile.zip"
+
+-   3.Download the shapefile
+
+    -   reference for learning how to do this: <https://r-graph-gallery.com/168-load-a-shape-file-into-r.html>
+
+download.file(shapefile_url, zip_file, mode = "wb")
+
+-   4.Unzip the shapefile
+
+unzip(zip_file, exdir = "canada_shapefile")
+
+-   5.List files in the extracted folder
+
+    -   reference for learning how to do this: <https://stackoverflow.com/questions/32129687/list-files-all-files-in-directory-and-subdirectories>
+
+list.files("canada_shapefile")
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+# Remove the comments and run the code chunck.
+
+
+## reference for learning how to do this: 
+# https://r-graph-gallery.com/168-load-a-shape-file-into-r.html ############
+
+# Define the URL of the shapefile (Natural Earth)
+#shapefile_url <- "https://naciscdn.org/naturalearth/50m/cultural/ne_50m_admin_1_states_provinces.zip"
+
+
+# Define file paths
+## reference for learning how to do this: 
+# https://r-graph-gallery.com/168-load-a-shape-file-into-r.html ############
+#zip_file <- "canada_shapefile.zip"
+
+
+## reference for learning how to do this: 
+# https://r-graph-gallery.com/168-load-a-shape-file-into-r.html ############
+# Download the shapefile
+#download.file(shapefile_url, zip_file, mode = "wb")
+
+
+# Unzip the shapefile
+#unzip(zip_file, exdir = "canada_shapefile")
+
+
+# List files in the extracted folder
+## reference for learning how to do this:  
+#https://stackoverflow.com/questions/32129687/list-files-all-files-in-directory-and-subdirectories   ############
+#list.files("canada_shapefile")
+
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+
+# Load Canada provinces shapefile:
+## reference for learning how to do this:  
+# https://mapscaping.com/read-write-shapefiles-in-r/ ############
+
+canada_map <- st_read("canada_shapefile/ne_50m_admin_1_states_provinces.shp")
+canada_map <- canada_map %>% filter(admin == "Canada")
+
+# Merge with substance use data
+canada_map$name <- as.character(canada_map$name)
+province_substance_use1$province <- as.character(province_substance_use1$province)
+canada_map <- merge(canada_map, province_substance_use1, by.x = "name", by.y = "province")
+
+```
+
+#### 3.1 Visualize Cannabis, Smoking , Alcohol Use by Province
+
+##### 3.1.1. Cannabis Use by Province
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+
+## reference for knowing how to do use and configure leaflet: ######################################
+# https://r-charts.com/spatial/interactive-maps-leaflet/
+# https://stackoverflow.com/questions/33045388/projecting-my-shapefile-data-on-leaflet-map-using-r
+# https://www.statisticshomeworkhelper.com/blog/interactive-mapping-r-leaflet-geographic-data-visualization/
+# https://www.r-bloggers.com/2021/01/visualizing-geospatial-data-in-r-part-3-making-interactive-maps-with-leaflet/
+
+
+
+# Define a high-contrast palette
+palette_cannabis <- colorBin("plasma", 
+                             domain = canada_map$avg_cannabis_use1, bins = 5,
+                             reverse = TRUE)
+
+leaflet(canada_map) %>%
+  addTiles() %>%
+  addPolygons(fillColor = ~palette_cannabis(avg_cannabis_use1), 
+              weight = 1.5, 
+              opacity = 1, 
+              color = "black",  # Darker borders for contrast
+              highlight = highlightOptions(weight = 4, 
+                                           color = "#111", 
+                                           bringToFront = TRUE),
+              popup = ~paste0("Province: ", name, "<br> Cannabis Use Responses: ", round(avg_cannabis_use1, 2))) %>%
+  addLegend(pal = palette_cannabis, 
+            values = ~avg_cannabis_use1, 
+            title = "Cannabis Use Responses", 
+            position = "bottomright")
+
+# to see the output, remove: #| include: FALSE
+
+
+```
+
+For easy visualization, a screen shot of the resulting geospatial visualization for the 3 substances were taken. And are directly loaded, so as to ensure that they are well visible.
+
+The following leaflet represent the geospatial visualization of cannabis use by province(see @cannabis_use_1).
+
+![Geospatial distribution of canabis use responses](picture_to_use/canabis_use_1.png){#cannabis_use_1}
+
+The leaflet map illustrates the geospatial distribution of cannabis use responses across Canadian provinces.
+
+**Québec** and **Newfoundland** and **Labrador** display the highest proportions of reported cannabis use, with values ranging between **0.25** to **0.30**, indicated by **deeper purple shades**(furthest to the right).
+
+In contrast, **Ontario** shows comparatively lower usage rates, falling within the **0.10** to **0.15** range, shaded in **yellow**.
+
+The western parts such as **British Columbia**, **Alberta**, and **Saskatchewan** reflect moderate cannabis use rates between **0.15** to **0.25**(going left after Ontario in yellow).
+
+This spatial pattern could suggests some regional variation in youth cannabis use, potentially linked to differences in provincial policies, access, education, and cultural norms around substance use.
+
+##### 3.1.2. Smoking Use by Province
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+
+# Define a high-contrast palette for smoking use
+palette_smoking <- colorBin("magma", domain = canada_map$avg_smoking_use1, bins = 5, reverse = TRUE)
+
+leaflet(canada_map) %>%
+  addTiles() %>%
+  addPolygons(fillColor = ~palette_smoking(avg_smoking_use1), 
+              weight = 1.5, opacity = 1, color = "black",  # Darker borders for contrast
+              highlight = highlightOptions(weight = 4, color = "#111", bringToFront = TRUE),
+              popup = ~paste0("Province: ", name, "<br> Smoking Use Responses: ", round(avg_smoking_use1, 2))) %>%
+  addLegend(pal = palette_smoking, values = ~avg_smoking_use1, 
+            title = "Smoking Use Responses", position = "bottomleft")
+
+# to see the output, remove: #| include: FALSE
+
+
+```
+
+The following graph represent the geospatial visualization of smoker by province(see @smoking_use_1).
+
+![Geospatial distribution of Smoking use responses](picture_to_use/smoking_use_1.png){#smoking_use_1}
+
+The leaflet map illustrates the geospatial distribution of provincial variation in youth smoking responses across Canada.
+
+**Québec** and **Newfoundland and Labrador** display the highest the **highest smoking prevalence**, with proportions ranging from **0.20 to 0.22**, indicated by the **darkest shading**.
+
+This is followed by **Ontario** and **Alberta** with rates fall within the **0.12 to 0.14** range.
+
+**British Columbia** also reports relatively low smoking rates, while provinces like **Manitoba** and **Saskatchewan** show moderate levels (around **0.14 to 0.18**).
+
+This geographic disparity could reflect differences in **tobacco** control efforts, cultural attitudes, and access to smoking prevention programs across the provinces.
+
+##### 3.1.3. Alcohol Use by Province
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+
+# Define a high-contrast palette for alcohol use
+palette_alcohol <- colorBin("viridis", domain = canada_map$avg_alcohol_use1, bins = 5, reverse = TRUE)
+
+leaflet(canada_map) %>%
+  addTiles() %>%
+  addPolygons(fillColor = ~palette_alcohol(avg_alcohol_use1), 
+              weight = 1.5, opacity = 1, color = "black",  # Darker borders for contrast
+              highlight = highlightOptions(weight = 4, color = "#111", bringToFront = TRUE),
+              popup = ~paste0("Province: ", name, "<br> Alcohol Use Responses: ", round(avg_alcohol_use1, 2))) %>%
+  addLegend(pal = palette_alcohol, values = ~avg_alcohol_use1, 
+            title = "Alcohol Use Responses", position = "bottomleft")
+
+# to see the output, remove: #| include: FALSE
+
+```
+
+The following graph represent the geospatial visualization of alcohol use by province(see @alcohol_use_1).
+
+![Geospatial distribution of Alcohol use responses](picture_to_use/alcohol_use_1.png){#alcohol_use_1}
+
+The alcohol leaflet map illustrates significant regional differences in reported alcohol use among Canadian youth.
+
+**Québec** display the **highest alcohol use prevalence** (between **0.50 to 0.55**), shown in the **darkest purple**.
+
+This is followed by **Nova Scotia** and **Newfoundland and Labrador**, which also report relatively high rates of alcohol use (above **0.45**).
+
+In contrast, **Manitoba** reports the **lowest prevalence**, falling within the **0.35 to 0.40** range.
+
+**British Columbia** and **Ontario** hover in the mid-range (around **0.40 to 0.50**).
+
+These differences could reflect cultural norms, enforcement of legal drinking age, accessibility, and local attitudes toward alcohol consumption in youth populations.
+
+In conclusion, the geospatial analysis of youth substance use across Canadian provinces seems to reveal consistent **regional disparities** in the prevalence of **cannabis, smoking, and alcohol** use.
+
+Provinces such as **Québec** and **Newfoundland and Labrador** consistently report **higher levels of substance use** across all three categories, while **Ontario** and **British Columbia** demonstrate **lower or moderate prevalence**.
+
+These patterns suggest that **provincial policies, enforcement intensity, cultural attitudes, accessibility, and educational outreach** may likely play influential roles in shaping youth substance use behavior.
+
+The observed geographic trends emphasize the importance of **region-specific public health strategies** and **targeted prevention efforts** that align with local contexts and needs.
+
+#### 4. Substance Use Analysis: bar graph
+
+##### 4.1. Current Smokers by Province:
+
+The following bar chart complements the previous geospatial distribution(Geospatial distribution of Smoking use responses) and displays the number of current student smokers by province.
+
+-   **Saskatchewan** reported the highest number of youth smokers, followed closely by **Nova Scotia** and **Newfoundland and Labrador**.
+
+-   **Alberta**, **Québec**, and **Ontario** also show substantial student smoking populations.
+
+-   On the lower end, **Prince Edward Island** and **Manitoba** have fewer reported student smokers, with **Manitoba** standing out as the province with the fewest cases.
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+#| label: fig-smoker-province
+#| fig-cap: "Number of Current Smokers by province"
+#| fig-align: center
+#| layout-ncol: 1
+#| fig-height: 4
+
+
+# Filter current smokers
+current_smokers <- CSTAD_v2 %>%
+  filter(DVTY1ST == 'Current Smoker')
+
+#reference of where I learned to use:summarise(n = n()) ############
+# https://dplyr.tidyverse.org/reference/count.html
+# Count by province (using `province` column)
+# the end result is a table that shows how many students are  smokers in each province
+smoker_count <- current_smokers %>%
+  group_by(province) %>%
+  summarise(count = n())
+
+# Color palette
+province_colors <- c(
+  "Newfoundland and Labrador" = "#E41A1C",
+  "Prince Edward Island" = "#377EB8",
+  "Nova Scotia" = "#4DAF4A",
+  "Québec" = "#984EA3",
+  "Ontario" = "#FF7F00",
+  "Manitoba" = "#FFFF33",
+  "Saskatchewan" = "#A65628",
+  "Alberta" = "#F781BF",
+  "British Columbia" = "#999999"
+)
+
+# Bar plot
+# `x = reorder(province, -count)`: this code reorders the province 
+# factor based on the count, from highest to lowest.
+# reference for reorder():
+# https://r-graph-gallery.com/267-reorder-a-variable-in-ggplot2.html
+
+ggplot(smoker_count, aes(
+  x = reorder(province, -count), 
+  y = count, fill = province)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Student Smokers by Province",
+       x = "Province",
+       y = "Number of Current Smokers") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_manual(values = province_colors)
+```
+
+##### 4.2. Current alchol users by province
+
+The following bar chart complements the previous geospatial distribution(Geospatial distribution of Alcohol use responses) and shows the total number of students who reported alcohol use by province.
+
+-   **Québec** has the highest number of student alcohol users, followed by **Alberta** and **Newfoundland and Labrador**.
+
+-   **Ontario**, **British Columbia**, and **Nova Scotia** show moderate usage levels.
+
+-   **Prince Edward Island** and especially **Manitoba** report significantly fewer students who consume alcohol.
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+#| label: fig-alcohol-province
+#| fig-cap: "Number of Current alcohol user by province"
+#| fig-align: center
+#| layout-ncol: 1
+#| fig-height: 4
+
+# Filter students who reported drinking alcohol
+alcohol_users <- CSTAD_v2 %>%
+  filter(ALC_010 == "Yes")
+
+# Define province color palette
+province_colors <- c(
+  "Newfoundland and Labrador" = "#E41A1C",
+  "Prince Edward Island" = "#377EB8",
+  "Nova Scotia" = "#4DAF4A",
+  "Québec" = "#984EA3",
+  "Ontario" = "#FF7F00",
+  "Manitoba" = "#FFFF33",
+  "Saskatchewan" = "#A65628",
+  "Alberta" = "#F781BF",
+  "British Columbia" = "#999999"
+)
+
+# count alchohol users
+alcohol_count <- alcohol_users %>%
+  group_by(province) %>%
+  summarise(count = n())
+
+# Plot
+ggplot(alcohol_count, 
+       aes(x = reorder(province, -count), 
+           y = count, fill = province)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Alcohol Use by Students",
+       x = "Province",
+       y = "Number of Students") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_manual(values = province_colors)
+
+
+
+```
+
+##### 4.3. Current Cannabis users by province
+
+The following bar chart complements the previous geospatial distribution(Geospatial distribution of Cananabis use responses) and illustrates the number of students reporting cannabis use.
+
+-   **Alberta** and **Newfoundland and Labrador** lead in reported cannabis use, with **Québec** not far behind.
+
+-   **Nova Scotia**, **British Columbia**, and **Ontario** show moderate usage numbers.
+
+-   **Saskatchewan**, **Prince Edward Island**, and **Manitoba** report the fewest cannabis users.
+
+Same as with the previous geospatial distributions, the above bar charts also show that across all three substances (smoking, alcohol, and cannabis), **Manitoba** consistentlyranks the **lowest** in **student use**, while **Québec, Alberta, Newfoundland and Labrador, and Nova Scotia** frequently rank among the **highest**.
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+#| label: fig-cannabis-province
+#| fig-cap: "Number of Current cannabis user by province"
+#| fig-align: center
+#| layout-ncol: 1
+#| fig-height: 4
+
+
+# Step 4: Filter for students who reported cannabis use
+cannabis_users <- CSTAD_v2 %>%
+  filter(CAN_010 == "Yes")
+
+# Step 5: Define province color palette
+province_colors <- c(
+  "Newfoundland and Labrador" = "#E41A1C",
+  "Prince Edward Island" = "#377EB8",
+  "Nova Scotia" = "#4DAF4A",
+  "Québec" = "#984EA3",
+  "Ontario" = "#FF7F00",
+  "Manitoba" = "#FFFF33",
+  "Saskatchewan" = "#A65628",
+  "Alberta" = "#F781BF",
+  "British Columbia" = "#999999"
+)
+
+# Step 6: Count cannabis users by province
+cannabis_count <- cannabis_users %>%
+  group_by(province) %>%
+  summarise(count = n())
+
+# Step 7: Plot
+ggplot(cannabis_count, aes(x = reorder(province, -count), y = count, fill = province)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Cannabis Use by students",
+       x = "Province",
+       y = "Number of Students") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_manual(values = province_colors)
+
+```
+
+\
+
+##### 4.4. Cannabis use before and after legalisation.
+
+We are trying to compare cannabis use among students **before** and **after** cannabis was legalized in **Canada** (in **October 2018**) **`reference`**. However, the dataset does not include a variable that directly states "**this use happened before legalization**", so we need to infer it using the available responses in **CAN_080**. The possible answers in **CAN_080**, include:
+
+-   "Yes, I have done this in the last 30 days"
+-   "Yes, I have done this in the last 12 months"
+-   "Yes, I have done this, but not in the last 12 months"
+-   (And other responses like "No", "Not stated", etc.)
+
+But we are only interest in the first 3. As such we proceed with filtering **CAN_080**, to keep only students who have used cannabis at some point, excluding those who gave answers like "No" or "Prefer not to say."
+
+The following are the assumptions we made:
+
+-   "but not in the last 12 months" → we assumed that they most likely used cannabis before 2018 → and was assumed to refer to the pre-legalization period:Pre-Legalization.
+
+-   "Last 30 days" or "Last 12 months" → we assumed that they definitely used cannabis after 2018 → and was assumed to refer to the post-legalization period: Post-Legalization.
+
+And we proceeded to group students by legalization period and compare usage across provinces in a bar plot.
+
+##### Few things to keep in mind:
+
+**1."Not in the last 12 months"** = Pre-Legalization
+
+-   Since the dataset was made **after cannabis was legalized**, we assumed that a student who answered "**Not in the last 12 months**", likely has tried cannabis before **2018**.
+
+    -   Plainly, if a student responded in **2021** that they had not used cannabis in the past year, we assumed that they likely used it **before it became legal**.
+
+**2."Last 12 months" or "Last 30 days"** = Post-Legalization
+
+-   Cannabis became legal in 2018, and this dataset dates from 2021, someone answering **"Last 12 months" or "Last 30 days"**, is considered a **recent users**, thereby has used **cannabis after 2018**.
+
+**3.This method is an approximation**:
+
+-   Remember that, this method does not account for exactly when the student used cannabis, but only approximate and make assumptions.
+-   Some students in the "**not in the last 12 months**" group could have still used cannabis after legalization — just not recently.
+-   The same way that those in "**Last 12 months**" or "**Last 30 days**" groups could have still used cannabis before legalization.
+
+But still, in spite of all the shortcomings, this method allows us to **visually and statistically compare**:
+
+-   How cannabis use changed post-legalization
+-   Whether certain provinces saw bigger increases than others
+-   Trends in student behavior over time
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+#| label: fig-legalization-province
+#| fig-cap: "Pre vs Post legalization comparison"
+#| fig-align: center
+#| layout-ncol: 1
+#| fig-height: 4
+
+# Filter valid cannabis use responses for CAN_080
+# (Pre/Post-Legalization grouping)
+# reference for using %in%:
+# https://www.statology.org/r-filter-in/ #########
+cannabis_use_filtered <- CSTAD_v2 %>%
+  filter(CAN_080 %in% c("Yes, I have done this in the last 30 days",
+                        "Yes, I have done this in the last 12 months",
+                        "Yes, I have done this, but not in the last 12 months")) %>%
+  mutate(
+    legalization_period = case_when(
+      CAN_080 == "Yes, I have done this, but not in the last 12 months" ~ "Pre-Legalization",
+      CAN_080 %in% c("Yes, I have done this in the last 30 days", 
+                     "Yes, I have done this in the last 12 months") ~ "Post-Legalization",
+      TRUE ~ NA_character_
+    ),
+    legalization_period = factor(legalization_period, 
+                                 levels = c("Pre-Legalization", "Post-Legalization"))
+  )
+
+# Step 3: Summarize by province and legalization period
+summary_data <- cannabis_use_filtered %>%
+  group_by(province, legalization_period) %>%
+  summarise(count = n(), .groups = "drop")
+
+# Step 4: Plot the grouped bar chart
+#ggplot(cannabis_count, aes(x = reorder(province, -count), y = count, fill = province#))
+
+#aes(x = province, y = count
+
+ggplot(summary_data, aes(x = reorder(province, -count), y = count, fill = legalization_period)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(
+    name = "Use Period",
+    values = c("Pre-Legalization" = "gray50", "Post-Legalization" = "steelblue")
+  ) +
+  labs(title = "Comparison of Cannabis Use Before and After Legalization",
+       x = "Province", 
+       y = "Number of Students") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+##### Findings:
+
+The above bar chart illustrates the change in the number of students reporting cannabis use **before and after legalization** across various Canadian provinces.
+
+Notably, there is a **consistent increase in reported** use **post-legalization** in every province represented.
+
+-   **Alberta** shows the highest **post-legalization** cannabis use among students, with over **380** students compared to around **130** pre-legalization.
+
+-   **British Columbia** and **Ontario** also show **significant increases**, both seeing a substantial jump in student use **after legalization**.
+
+-   In contrast, **Manitoba** and **Prince Edward** **Island** had relatively lower overall numbers, but still show a marked **increase post-legalization**.
+
+-   **Newfoundland and Labrador**, while having among the highest pre-legalization numbers, demonstrates a relatively less pronounced increase **post-legalization**.
+
+-   The provinces of **Quebec**, **Nova Scotia**, and **Saskatchewan** also display similar **upward trends**.
+
+These trends suggest that legalization may have influenced a rise in cannabis use among students across provinces, possibly due to increased accessibility, reduced stigma, or changes in perception about the risks associated with cannabis use.
+
+### 4.2. Network Analysis: Substance Access Channels by Substance Type
+
+##### Canabis
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+#| label: fig-cannabis-network
+#| fig-cap: "Cannabis Access Network "
+#| fig-align: center
+
+
+CSTAD_v2 <- read.csv("cleaned_dataset.csv")
+
+CSTAD_v2$CAN_121_code<- factor(CSTAD_v2$CAN_121,
+                          levels = c('I have not done this in the last 12 months',
+                                     'I grow my own',
+                                     'it was shared around a group of friends',
+                                     'I took it from a family member or friend without their permission',
+                                     'I took it from someone else without their permission',
+                                     'I got or bought it online(e.g.website, social media store, etc.)',
+                                     'I got or bought it from a family member or a friend',
+                                     'I got or bought it from someone else',
+                                     'I bought it from a store',
+                                     'some one bought it for me at a retail store',
+                                     'other',
+                                     'Valid Skip', 
+                                     'Not Stated'),
+                          labels = c(2,3,4,5,6,7,8,9,10,11,12,96,99),)
+
+
+# Create edges (all values included)
+edges_df <- CSTAD_v2 %>%
+  select(source = CAN_121_code) %>%
+  mutate(target = "Cannabis Access",
+         source = as.character(source))  # convert to character for igraph
+
+
+
+G <- graph_from_data_frame(edges_df, directed = TRUE)
+layout_matrix <- layout_with_fr(G)
+G_net <- ggnetwork(G, layout = layout_matrix)
+
+# Add grouping and plot customization
+G_net$group <- ifelse(G_net$name == "Cannabis Access", "Target", "Source")
+network_colors <- c("Target" = "orange", "Source" = "skyblue")
+
+ggplot(G_net, aes(x = x, y = y, xend = xend, yend = yend)) +
+  geom_edges(color = "grey70", arrow = arrow(length = unit(6, "pt")), curvature = 0.2) +
+  geom_nodes(aes(color = group), shape = 21, fill = "white", stroke = 1.2) +
+  geom_nodetext(aes(label = name), fontface = "bold", color = "black", size = 3, check_overlap = TRUE) +
+  scale_color_manual(values = network_colors) +
+  theme_void() +
+  labs(title = "Cannabis Access Network ")
+
+```
+
+The **Cannabis Access Network** visualizes the various methods students reported for accessing cannabis. Each code represents a unique access pathway, all of which go to the central node labeled ***Cannabis Access*****.** This layout allows for a simplified view of the diversity in cannabis acquisition among youth, though the network does not allow for inferring any causalities.
+
+**Notable Observations:**
+
+**Social and Peer-Based Access:**
+
+-   **Source** **4** (*Shared around a group of friends*) and **Source** **8** (*Got or bought from a family member or a friend*) highlight the importance of peer and familial influence. These are likely among the more normalized channels of access.
+
+-   **Source** **3** (*I grow my own*) is also present, suggesting a small portion of youth may be cultivating cannabis themselves, though likely infrequent.
+
+**Unauthorized Access:**
+
+-   **Source** **5** and **Source** **6** show cases where cannabis was taken *without permission*—either from friends/family or someone else—indicating a form of risky or unsupervised behavior.
+
+**Retail and Online Access:**
+
+-   **Source** **7** (*Bought online*) and **Source** **10** (*Bought from a store*) indicate the presence of regulated and possible unregulated access pathways.
+
+-   **Source** **11** (*Someone bought it for me at a retail store*) implies indirect retail access, possibly facilitated by someone of legal purchasing age.
+
+**Other/Unclear Responses:**
+
+-   **Source** **12** (*Other*), **Source** **96** (*Valid Skip*), and **Source** **99** (*Not Stated*) represent responses that are either ambiguous, skipped, or undisclosed—making it harder to assess the exact nature of access in these cases.
+
+-   **Source** **2** (*I have not done this in the last 12 months*), is slightly ambiguous, as it indicates students who may have previously accessed cannabis but **have not done so recently**. This is important to distinguish from abstinence (i.e., never used), as it might still suggests past exposure or availability.
+
+###### Legend for `CAN_121_code`
+
+| Source | Description                                                   |
+|--------|---------------------------------------------------------------|
+| 2      | I have not done this in the last 12 months                    |
+| 3      | I grow my own                                                 |
+| 4      | It was shared around a group of friends                       |
+| 5      | I took it from a family member or friend without permission   |
+| 6      | I took it from someone else without permission                |
+| 7      | I got or bought it online (e.g., website, social media store) |
+| 8      | I got or bought it from a family member or a friend           |
+| 9      | I got or bought it from someone else                          |
+| 10     | I bought it from a store                                      |
+| 11     | Someone bought it for me at a retail store                    |
+| 12     | Other                                                         |
+| 96     | Valid Skip                                                    |
+| 99     | Not Stated                                                    |
+
+##### Alcohol
+
+```{r}
+#| message: false
+#| warning: false
+#| label: fig-alcohol-network
+#| fig-cap: "Alcohol Access Network "
+#| fig-align: center
+#| echo: false
+
+# Load CSTADS dataset
+CSTAD_v2 <- read.csv("cleaned_dataset.csv")
+
+CSTAD_v2$ALC_075_code <- factor(CSTAD_v2$ALC_075,
+                             levels = c('I have never consumed alcohol',
+                                      'I have not consumed alcohol in the last 12 months',
+                                      'I took it from a friend or a family member without permission',
+                                      'I took it from someone else without permission',
+                                      'A parent (or guardian) gave it to me',
+                                      'I got or bought it from a friend or a family member (not a parent or a guardian)',
+                                      'I got or bought it from someone else',
+                                      'It was shared at a party',
+                                      'I got or bought it at a public event (e.g., concert, sporting event)',
+                                      'I bought it or someone bought it for me at a store (e.g., liquor store, convenience store, grocery store)',
+                                      'I bought it or someone bought it for me at a restaurant or bar',
+                                      'Other',
+                                      'Valid Skip',
+                                      'Not Stated'),
+                            labels = c(1,2,3,4,5,6,7,8,9,10,11,12,96,99))
+
+
+
+# Create edges (all values included)
+edges_df <- CSTAD_v2 %>%
+  select(source = ALC_075_code) %>%
+  mutate(target = "Alcohol Access",
+         source = as.character(source))  # convert to character for igraph
+
+
+
+G <- graph_from_data_frame(edges_df, directed = TRUE)
+layout_matrix <- layout_with_fr(G)
+G_net <- ggnetwork(G, layout = layout_matrix)
+
+# Add grouping and plot customization
+G_net$group <- ifelse(G_net$name == "Alcohol Access", "Target", "Source")
+network_colors <- c("Target" = "orange", "Source" = "skyblue")
+
+ggplot(G_net, aes(x = x, y = y, xend = xend, yend = yend)) +
+  geom_edges(color = "grey70", arrow = arrow(length = unit(6, "pt")), curvature = 0.2) +
+  geom_nodes(aes(color = group), shape = 21, fill = "white", stroke = 1.2) +
+  geom_nodetext(aes(label = name), fontface = "bold", color = "black", size = 3, check_overlap = TRUE) +
+  scale_color_manual(values = network_colors) +
+  theme_void() +
+  labs(title = "Alcohol Access Network ")
+
+
+```
+
+###### Legend for ALC_075_code
+
+| Source | Description |
+|------------------------------------|------------------------------------|
+| 1 | I have never consumed alcohol |
+| 2 | I have not consumed alcohol in the last 12 months |
+| 3 | I took it from a friend or a family member without permission |
+| 4 | I took it from someone else without permission |
+| 5 | A parent (or guardian) gave it to me |
+| 6 | I got or bought it from a friend or a family member (not a parent/guardian) |
+| 7 | I got or bought it from someone else |
+| 8 | It was shared at a party |
+| 9 | I got or bought it at a public event (e.g., concert, sporting event) |
+| 10 | I bought it or someone bought it for me at a store |
+| 11 | I bought it or someone bought it for me at a restaurant or bar |
+| 12 | Other |
+| 96 | Valid Skip |
+| 99 | Not Stated |
+
+The **Alcohol Access Network** diagram visualizes the diverse methods through which students reported accessing alcohol, as captured by the **ALC_075** variable. Each connection stems from a central node, representing ***Alcohol Access***, and branches out from various coded pathways based on student responses.
+
+**Notable Observations:**
+
+-   **Social and familial** pathways :
+
+-   **Source 5** (*A parent or guardian gave it to me*) and **Source 6** (*Got/bought it from a friend or family member, not a parent*) are among the most direct channels.
+
+-   **Source 8 and 9** highlights the possible influence of social environments as points of alcohol initiation./sharing
+
+-   **Unauthorized access** pathways are present:
+
+-   **Source 3 and 4** reflect alcohol being **taken *without permission***, either from friends/family or someone else—indicating some **level of risk behavior** or lack of adult supervision.
+
+-   **Commercial access** are present as well:
+
+-   **Source 10** (*Bought at a store or had someone buy it*) and **Source 11** (*Access via a bar or restaurant*) exist but are likely infrequent due to age restrictions.
+
+-   **Other forms**:
+
+-   **Source 12** (*Other*), **Source 96** (*Valid Skip*), and **Source 99** (*Not Stated*) suggest some ambiguity or unwillingness to disclose access routes.
+
+-   **Source 1** and **Source 2**, which indicate *never consumed* or *no use in the past 12 months*, show that abstinence or infrequent use is still a reality for some respondents
+
+##### Smoker: continue here
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+#| label: fig-cigarettes-network
+#| fig-cap: "Cigarettes Access Network "
+#| fig-align: center
+
+CSTAD_v2 <- read.csv("cleaned_dataset.csv")
+CSTAD_v2$CA_011_code <- factor(CSTAD_v2$CA_011,
+                          levels = c('I do not smoke',
+                                     'I buy them myself at a store',
+                                     'I buy them from a First Nation Reserve',
+                                     'I buy them on a First NAtion Reserve',
+                                     'I buy them from a friend',
+                                     'I buy them from someone else',
+                                     'I ask someone to buy them for me',
+                                     'My brother or sister gives them to me',
+                                     'My mother or father gives them to me',
+                                     'A friend gives them to me',
+                                     'Someone else gives them to me',
+                                     'I take them from my mother, father, or siblings',
+                                     'other',
+                                     'Valid Skip', 
+                                     'Not Stated'),
+                          labels = c(1,2,3,4,5,6,7,8,9,10,11,12,13,96,99),)
+
+
+
+
+# Step 3: Create edges (all values included)
+edges_df <- CSTAD_v2 %>%
+  select(source = CA_011_code) %>%
+  mutate(target = "Cigarettes Access",
+         source = as.character(source))  # convert to character for igraph
+
+
+
+G <- graph_from_data_frame(edges_df, directed = TRUE)
+layout_matrix <- layout_with_fr(G)
+G_net <- ggnetwork(G, layout = layout_matrix)
+
+# Step 5: Add grouping and plot customization
+G_net$group <- ifelse(G_net$name == "Cigarettes Access", "Target", "Source")
+network_colors <- c("Target" = "orange", "Source" = "skyblue")
+
+ggplot(G_net, aes(x = x, y = y, xend = xend, yend = yend)) +
+  geom_edges(color = "grey70", arrow = arrow(length = unit(6, "pt")), curvature = 0.2) +
+  geom_nodes(aes(color = group), shape = 21, fill = "white", stroke = 1.2) +
+  geom_nodetext(aes(label = name), fontface = "bold", color = "black", size = 3, check_overlap = TRUE) +
+  scale_color_manual(values = network_colors) +
+  theme_void() +
+  labs(title = "Cigarettes Access Network ")
+```
+
+###### Legend for CA_011_code
+
+| **Source** | Description                                     |
+|------------|-------------------------------------------------|
+| 1          | I do not smoke                                  |
+| 2          | I buy them myself at a store                    |
+| 3          | I buy them from a First Nation Reserve          |
+| 4          | I buy them on a First Nation Reserve            |
+| 5          | I buy them from a friend                        |
+| 6          | I buy them from someone else                    |
+| 7          | I ask someone to buy them for me                |
+| 8          | My brother or sister gives them to me           |
+| 9          | My mother or father gives them to me            |
+| 10         | A friend gives them to me                       |
+| 11         | Someone else gives them to me                   |
+| 12         | I take them from my mother, father, or siblings |
+| 13         | Other                                           |
+| 96         | Valid Skip                                      |
+| 99         | Not Stated                                      |
+
+The **Cigarettes Access Network** diagram illustrates the various pathways through which students reported accessing cigarettes, as categorized by the `CA_011` variable.
+
+Each source is visualized as a node connected to the central node—**Cigarettes Access**. This unweighted network presents the structure of responses but does **not represent frequency or dominance** of access methods.
+
+#### 
+
+**Notable Observations:**
+
+**Non-Smoking Behavior:**
+
+-   **Source 1** (*I do not smoke*) reflects abstinence from smoking and represent ortion of the respondents who have chosen not to engage with cigarette use.
+
+**Commercial and Reserve-Based Purchasing:**
+
+-   **Source 2** (*Buy them myself at a store*) and **Source 3 and 4** (*Buy from or on a First Nation Reserve*) represent **direct purchasing behavior**.
+
+-   These sources suggest that **commercial access—either formal or informal—remains a viable route** for some students.
+
+**Peer-Related Access:**
+
+-   **Source 5** (*Buy from a friend*), **Source 10** (*Friend gives them*), and **Source 7** (*Ask someone to buy them*) show the influence of **peer networks** in facilitating access.
+
+-   These methods highlight how youth may rely on social circles to circumvent legal barriers.
+
+**Family-Related Access:**
+
+-   **Source 6** (*Buy from someone else*), **Source 8** (*Sibling gives them*), **Source 9** (*Parent gives them*), and **Source 12** (*Taken from family without permission*) illustrate **household-level access**, both voluntary and unauthorized.
+
+-   These access points raise possible concerns around **family norms, supervision, and in-home availability** of cigarettes.
+
+**Other and Undefined Sources:**
+
+-   **Source 11** (*Someone else gives them*) and **Source 13** (*Other*) introduce less-defined channels, which may include neighbors, acquaintances, or third-party intermediaries.
+
+-   **Source 96** (*Valid Skip*) and **99** (*Not Stated*) reflect missing or undisclosed responses, limiting insight into a portion of the data.
+
+In conclusion, the network visualizations for **Cannabis, Alcohol, and Cigarettes** access provide valuable insights, into the diverse pathways through which youth report obtaining these substances.
+
+While these diagrams do not allow for any causality, they help reveal the **complex social, familial, and commercial structures** that underpin substance availability among students.
+
+Across all three substances, **peer and family-based access** emerged as prominent access point.
+
+**Friends and relatives** often act as intermediaries—either by directly sharing, purchasing, or giving substances—highlighting the influential role of social environments in shaping youth behavior.
+
+For **cannabis and alcohol** in particular, sharing **among peers** or **receiving from family** members was commonly reported. Similarly, **cigarette access** frequently involved **siblings, parents, or friends**, pointing to normalization and availability within the home.
+
+**Unauthorized and indirect access routes,** were also consistently observed. Students reported taking substances without permission or relying on others to purchase on their behalf—behaviors that suggest **limited supervision, potential risk-taking, or attempts to circumvent legal restrictions**.
+
+In all three networks, **commercial access remains a concern**, with reports of **direct** purchases from stores or First Nation Reserves, as well as **indirect** retail access through **third parties**. While these pathways may not be the most frequent, their presence, **raises possible questions** about **enforcement gaps and regulatory effectiveness**.
+
+Additionally, many students chose not to disclose **access routes or reported a non-use**, suggesting that a portion of the population remains disengaged from these behaviors or is unwilling to share access details.
+
+All in all, these responses could be critical in understanding the broader landscape of youth substance engagement, as they could reflect both positive public health trends, and data limitations due to stigma or privacy concerns.
